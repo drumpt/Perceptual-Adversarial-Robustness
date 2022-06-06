@@ -21,9 +21,11 @@ def evaluate_against_attacks(model, attacks, val_loader, parallel=1,
         model_lpips_model.cuda()
         alexnet_lpips_model.cuda()
 
-        device_ids = list(range(parallel))
-        model_lpips_model = nn.DataParallel(model_lpips_model, device_ids)
-        alexnet_lpips_model = nn.DataParallel(alexnet_lpips_model, device_ids)
+        # device_ids = list(range(parallel))
+        # model_lpips_model = nn.DataParallel(model_lpips_model, device_ids)
+        # alexnet_lpips_model = nn.DataParallel(alexnet_lpips_model, device_ids)
+        model_lpips_model = nn.DataParallel(model_lpips_model)
+        alexnet_lpips_model = nn.DataParallel(alexnet_lpips_model)
 
     model_state_dict = copy.deepcopy(model.state_dict())
 

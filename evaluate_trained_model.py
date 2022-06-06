@@ -40,9 +40,11 @@ if __name__ == '__main__':
 
     # Parallelize
     if torch.cuda.is_available():
-        device_ids = list(range(args.parallel))
-        model = nn.DataParallel(model, device_ids)
-        attacks = [nn.DataParallel(attack, device_ids) for attack in attacks]
+        # device_ids = list(range(args.parallel))
+        # model = nn.DataParallel(model, device_ids)
+        # attacks = [nn.DataParallel(attack, device_ids) for attack in attacks]
+        model = nn.DataParallel(model)
+        attacks = [nn.DataParallel(attack) for attack in attacks]
 
     batches_correct: Dict[str, List[torch.Tensor]] = \
         {attack_name: [] for attack_name in attack_names}

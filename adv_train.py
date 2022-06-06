@@ -1,12 +1,15 @@
 from typing import Any, Callable, List, Optional, cast
-import torch
 import argparse
-import numpy as np
 import shutil
 import glob
 import time
 import random
 import os
+import logging
+from datetime import datetime
+
+import numpy as np
+import torch
 from torch import nn
 from tensorboardX import SummaryWriter
 
@@ -17,6 +20,22 @@ from perceptual_advex.attacks import *
 from perceptual_advex.models import FeatureModel
 
 VAL_ITERS = 100
+
+
+def get_logger(log_dir):
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+
+    time_string = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    file_handler = logging.FileHandler(os.path.join(log_dir, f"log_{time_string}.txt"))
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    return logger
 
 
 if __name__ == '__main__':
@@ -63,6 +82,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--attack', type=str, action='append',
                         help='attack(s) to harden against')
+    parser.add_argument('--use_mat', type=int, default=0,
+                        help='whether to use mixed adversarial training or not')
 
     args = parser.parse_args()
 
@@ -152,6 +173,7 @@ if __name__ == '__main__':
             .replace(", num_iterations=10", '')
         )
     experiment_path_parts.append(attacks_part)
+    experiment_path_parts.append(f"use_mat_{args.use_mat}")
     experiment_path = os.path.join(*experiment_path_parts)
 
     iteration = 0
@@ -164,6 +186,7 @@ if __name__ == '__main__':
             # actually deleted
             time.sleep(5)
     writer = SummaryWriter(log_dir)
+    logger = get_logger(log_dir)
 
     # optimizer
     optimizer: optim.Optimizer
@@ -216,14 +239,17 @@ if __name__ == '__main__':
 
     # parallelize
     if torch.cuda.is_available():
-        device_ids = list(range(args.parallel))
-        model = nn.DataParallel(model, device_ids)
-        attacks = [nn.DataParallel(attack, device_ids) for attack in attacks]
-        validation_attacks = [nn.DataParallel(attack, device_ids)
+        # device_ids = list(range(args.parallel))
+        # model = nn.DataParallel(model, device_ids)
+        # attacks = [nn.DataParallel(attack, device_ids) for attack in attacks]
+        # validation_attacks = [nn.DataParallel(attack, device_ids)
+        #                       for attack in validation_attacks]
+        model = nn.DataParallel(model)
+        attacks = [nn.DataParallel(attack) for attack in attacks]
+        validation_attacks = [nn.DataParallel(attack)
                               for attack in validation_attacks]
 
-    # necessary to put training loop in a function because otherwise we get
-    # huge memory leaks
+    # necessary to put training loop in a function because otherwise we get huge memory leaks
     def run_iter(
         inputs: torch.Tensor,
         labels: torch.Tensor,
@@ -299,10 +325,120 @@ if __name__ == '__main__':
                        calculate_accuracy(attack_logits, labels).item())
 
         if train:
-            print(f'ITER {iteration:06d}',
-                  f'accuracy: {accuracy.item() * 100:5.1f}%',
-                  f'loss: {loss.item():.2f}',
-                  sep='\t')
+            logger.info(f'ITER {iteration:06d}\taccuracy: {accuracy.item() * 100:5.1f}%\tloss: {loss.item():.2f}')
+
+        # OPTIMIZATION
+        if train:
+            loss.backward()
+
+            # clip gradients and optimize
+            nn.utils.clip_grad_value_(model.parameters(), args.clip_grad)
+            optimizer.step()
+
+    def run_iter_with_mat(
+        inputs: torch.Tensor,
+        labels: torch.Tensor,
+        iteration: int,
+        train: bool = True,
+        log_fn: Optional[Callable[[str, Any], Any]] = None,
+    ):
+        # hyperparameters and kl-divergence function
+        MAT_GAMMA = 0.5
+        MAT_BETA = 0.4
+        kl_div_loss_fn = nn.KLDivLoss(reduction='batchmean', log_target=True)
+
+        prefix = 'train' if train else 'val'
+        if log_fn is None:
+            log_fn = lambda tag, value: writer.add_scalar(
+                f'{prefix}/{tag}', value, iteration)
+
+        model.eval()  # set model to eval to generate adversarial examples
+
+        if torch.cuda.is_available():
+            inputs = inputs.cuda()
+            labels = labels.cuda()
+
+        if args.only_attack_correct:
+            with torch.no_grad():
+                orig_logits = model(inputs)
+                to_attack = orig_logits.argmax(1) == labels
+        else:
+            to_attack = torch.ones_like(labels).bool()
+
+        if args.randomize_attack:
+            step_attacks = [random.choice(attacks)]
+        else:
+            step_attacks = attacks
+
+        adv_inputs_list: List[torch.Tensor] = []
+        for attack in step_attacks:
+            attack_adv_inputs = inputs.clone()
+            if to_attack.sum() > 0:
+                attack_adv_inputs[to_attack] = attack(inputs[to_attack],
+                                                      labels[to_attack])
+            adv_inputs_list.append(attack_adv_inputs[to_attack])
+        adv_inputs: torch.Tensor = torch.cat(adv_inputs_list)
+
+        if train:
+            optimizer.zero_grad()
+            model.train()  # now we set the model to train mode
+
+        # concatenate batch first and forward
+        all_logits = model(torch.cat([inputs, adv_inputs]))
+        all_labels = torch.cat([labels] + [labels[to_attack]] * len(step_attacks)) # clean + num_attacks
+        all_loss = F.cross_entropy(all_logits, all_labels, reduction='none')
+
+        # calculate cross-entropy for clean and adversarial samples, respectively.
+        clean_cross_entropy = all_loss[:labels.shape[0], ...].mean()
+        adv_cross_entropy = all_loss[labels.shape[0]:, ...].mean()
+
+        # calculate KL-divergence for clean and adversarial samples.
+        kl_div_loss_list = []
+        for i in range(len(step_attacks)):
+            kl_div_loss_list.append(
+                kl_div_loss_fn(
+                    F.log_softmax(all_logits[0 : inputs.shape[0], ...][to_attack], dim=1),
+                    F.log_softmax(all_logits[inputs.shape[0] + i * len(labels[to_attack]) : inputs.shape[0] + (i + 1) * len(labels[to_attack]), ...], dim=1)
+                )
+            )
+        kl_div_loss = torch.mean(torch.stack(kl_div_loss_list))
+
+        loss = MAT_GAMMA * clean_cross_entropy + (1 - MAT_GAMMA) * adv_cross_entropy + MAT_BETA * kl_div_loss
+
+        # LOGGING
+        accuracy = calculate_accuracy(all_logits, all_labels)
+        log_fn('loss', loss.item())
+        log_fn('accuracy', accuracy.item())
+
+        with torch.no_grad():
+            for attack_index, attack in enumerate(["NoAttack"] + step_attacks):
+                if attack_index == 0:
+                    attack_name = attack
+                elif isinstance(attack, nn.DataParallel):
+                    attack_name = attack.module.__class__.__name__
+                else:
+                    attack_name = attack.__class__.__name__
+                if attack_index == 0:
+                    attack_logits = all_logits[
+                        attack_index * inputs.size()[0]:
+                        (attack_index + 1) * inputs.size()[0]
+                    ]
+                    log_fn(f'loss/{attack_name}',
+                        F.cross_entropy(attack_logits, labels).item())
+                    log_fn(f'accuracy/{attack_name}',
+                        calculate_accuracy(attack_logits, labels).item())
+                else:
+                    attack_logits = all_logits[
+                        inputs.size()[0] + (attack_index - 1) * len(labels[to_attack]):
+                        inputs.size()[0] + attack_index * len(labels[to_attack])
+                    ]
+                    log_fn(f'loss/{attack_name}',
+                        F.cross_entropy(attack_logits, labels[to_attack]).item())
+                    log_fn(f'accuracy/{attack_name}',
+                        calculate_accuracy(attack_logits, labels[to_attack]).item())                    
+
+        if train:
+            logger.info(f'ITER {iteration:06d}\taccuracy: {accuracy.item() * 100:5.1f}%\tloss: {loss.item():.2f}')
 
         # OPTIMIZATION
         if train:
@@ -318,7 +454,7 @@ if __name__ == '__main__':
             if epoch >= lr_drop_epoch:
                 lr *= 0.1
 
-        print(f'START EPOCH {epoch:04d} (lr={lr:.0e})')
+        logger.info(f'START EPOCH {epoch:04d} (lr={lr:.0e})')
         for batch_index, (inputs, labels) in enumerate(train_loader):
             # ramp-up learning rate for SGD
             if epoch < 5 and args.optim == 'sgd' and args.lr >= 0.1:
@@ -326,15 +462,18 @@ if __name__ == '__main__':
             for param_group in optimizer.param_groups:
                 param_group['lr'] = lr
 
-            run_iter(inputs, labels, iteration)
+            if args.use_mat:
+                run_iter_with_mat(inputs, labels, iteration)
+            else:
+                run_iter(inputs, labels, iteration)
             iteration += 1
-        print(f'END EPOCH {epoch:04d}')
+        logger.info(f'END EPOCH {epoch:04d}')
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
         # VALIDATION
-        print('BEGIN VALIDATION')
+        logger.info('BEGIN VALIDATION')
         model.eval()
 
         evaluation.evaluate_against_attacks(
@@ -343,7 +482,7 @@ if __name__ == '__main__':
         )
 
         checkpoint_fname = os.path.join(log_dir, f'{epoch:04d}.ckpt.pth')
-        print(f'CHECKPOINT {checkpoint_fname}')
+        logger.info(f'CHECKPOINT {checkpoint_fname}')
         checkpoint_model = model
         if isinstance(checkpoint_model, nn.DataParallel):
             checkpoint_model = checkpoint_model.module
@@ -361,13 +500,13 @@ if __name__ == '__main__':
         last_keep_checkpoint = (epoch // args.keep_every) * args.keep_every
         for epoch, checkpoint_fname in get_checkpoint_fnames():
             if epoch < last_keep_checkpoint and epoch % args.keep_every != 0:
-                print(f'  remove {checkpoint_fname}')
+                logger.info(f'  remove {checkpoint_fname}')
                 os.remove(checkpoint_fname)
 
-    print('BEGIN EVALUATION')
+    logger.info('BEGIN EVALUATION')
     model.eval()
 
     evaluation.evaluate_against_attacks(
         model, validation_attacks, val_loader, parallel=args.parallel,
     )
-    print('END EVALUATION')
+    logger.info('END EVALUATION')
