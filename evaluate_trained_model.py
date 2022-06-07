@@ -3,6 +3,7 @@ from typing import Dict, List
 import torch
 import csv
 import argparse
+from datetime import datetime
 
 from perceptual_advex.utilities import add_dataset_model_arguments, \
     get_dataset_model
@@ -29,11 +30,17 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     dataset, model = get_dataset_model(args)
-    _, val_loader = dataset.make_loaders(1, args.batch_size, only_val=True)
+    # train_loader, val_loader = dataset.make_loaders(1, args.batch_size, only_val=True)
+    train_loader, val_loader = dataset.make_loaders(1, args.batch_size)
 
     model.eval()
     if torch.cuda.is_available():
         model.cuda()
+
+    # for using adversarial-robustness-toolbox(art)
+    inputs, labels = next(iter(train_loader))
+    input_shape = inputs.shape[1:]
+    nb_classes = int(model(inputs.cuda()).shape[1])
 
     attack_names: List[str] = args.attacks
     attacks = [eval(attack_name) for attack_name in attack_names]
@@ -50,8 +57,6 @@ if __name__ == '__main__':
         {attack_name: [] for attack_name in attack_names}
 
     for batch_index, (inputs, labels) in enumerate(val_loader):
-        print(f'BATCH {batch_index:05d}')
-
         if (
             args.num_batches is not None and
             batch_index >= args.num_batches
@@ -85,7 +90,8 @@ if __name__ == '__main__':
               sep='\t')
         accuracies.append(accuracy)
 
-    with open(args.output, 'w') as out_file:
+    output_filename = args.output.split(".")[0] + "_" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S") + ".csv"
+    with open(output_filename, 'w') as out_file:
         out_csv = csv.writer(out_file)
         out_csv.writerow(attack_names)
         if args.per_example:

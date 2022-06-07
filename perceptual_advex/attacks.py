@@ -7,6 +7,10 @@ from torch import optim
 from advex_uar.common.pyt_common import get_attack as get_uar_attack
 from advex_uar.attacks.attacks import InverseImagenetTransform
 
+import art
+from art.estimators.classification import PyTorchClassifier
+import torchattacks
+
 from .perceptual_attacks import *
 from .utilities import LambdaLayer
 from . import utilities
@@ -409,3 +413,116 @@ class AutoL2Attack(AutoAttack):
             eps=bound,
             **kwargs,
         )
+
+
+class TorchAttack(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, inputs, labels):
+        return self.attacker(inputs, labels)
+
+
+class DeepFoolAttack(TorchAttack):
+    def __init__(self, model, **kwargs):
+        super().__init__()
+
+        self.attacker = torchattacks.DeepFool(model, **kwargs)
+ 
+
+class OnePixelAttack(TorchAttack):
+    def __init__(self, model, **kwargs):
+        super().__init__()
+
+        self.attacker = torchattacks.OnePixel(model, **kwargs)
+
+
+class PixleAttack(TorchAttack):
+    def __init__(self, model, **kwargs):
+        super().__init__()
+
+        self.attacker = torchattacks.Pixle(model, **kwargs)
+
+
+class JitterAttack(TorchAttack):
+    def __init__(self, model, **kwargs):
+        super().__init__()
+
+        self.attacker = torchattacks.Jitter(model, **kwargs)
+
+
+class SparseFoolAttack(TorchAttack):
+    def __init__(self, model, **kwargs):
+        super().__init__()
+
+        self.attacker = torchattacks.SparseFool(model, **kwargs)
+
+
+class CWAttack(TorchAttack):
+    def __init__(self, model, **kwargs):
+        super().__init__()
+
+        self.attacker = torchattacks.CW(model, **kwargs)
+
+
+class TPGDAttack(TorchAttack):
+    def __init__(self, model, **kwargs):
+        super().__init__()
+
+        self.attacker = torchattacks.TPGD(model, **kwargs)
+
+
+class MIFGSMAttack(TorchAttack):
+    def __init__(self, model, **kwargs):
+        super().__init__()
+
+        self.attacker = torchattacks.MIFGSM(model, **kwargs)
+
+
+class APGDAttack(TorchAttack):
+    def __init__(self, model, **kwargs):
+        super().__init__()
+
+        self.attacker = torchattacks.APGD(model, **kwargs)
+
+
+class SquareAttack(TorchAttack):
+    def __init__(self, model, **kwargs):
+        super().__init__()
+
+        self.attacker = torchattacks.Square(model, **kwargs)
+
+
+class EOTPGDAttack(TorchAttack):
+    def __init__(self, model, **kwargs):
+        super().__init__()
+
+        self.attacker = torchattacks.EOTPGD(model, **kwargs)
+
+
+class EOTPGDAttack(TorchAttack):
+    def __init__(self, model, **kwargs):
+        super().__init__()
+
+        self.attacker = torchattacks.EOTPGD(model, **kwargs)
+
+
+class DIFGSMAttack(TorchAttack):
+    def __init__(self, model, **kwargs):
+        super().__init__()
+
+        self.attacker = torchattacks.DIFGSM(model, **kwargs)
+
+
+class TIFGSMAttack(TorchAttack):
+    def __init__(self, model, **kwargs):
+        super().__init__()
+
+        self.attacker = torchattacks.TIFGSM(model, **kwargs)
+
+
+class UPGDAttack(TorchAttack):
+    def __init__(self, model, **kwargs):
+        super().__init__()
+
+        self.attacker = torchattacks.UPGD(model, **kwargs)

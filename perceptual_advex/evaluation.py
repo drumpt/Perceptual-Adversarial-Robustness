@@ -14,6 +14,8 @@ def evaluate_against_attacks(model, attacks, val_loader, parallel=1,
     optionally writing it to a tensorboardX summary writer.
     """
 
+    accuracy_per_attack = dict()
+
     model_lpips_model: nn.Module = LPIPSDistance(model)
     alexnet_lpips_model: nn.Module = LPIPSDistance()
 
@@ -91,8 +93,9 @@ def evaluate_against_attacks(model, attacks, val_loader, parallel=1,
                               accuracy.item(),
                               iteration)
         print_cols.append(f'accuracy: {accuracy.item() * 100:.1f}%')
-
         print(*print_cols, sep='\t')
+
+        accuracy_per_attack[attack_name] = accuracy
 
         for lpips_name, successful_lpips in [
             ('alexnet', successful_alexnet_lpips),
@@ -116,3 +119,5 @@ def evaluate_against_attacks(model, attacks, val_loader, parallel=1,
             max_diff = (old_tensor - new_tensor).abs().max().item()
             if max_diff > 1e-8:
                 print(f'max difference for {key} = {max_diff}')
+
+    return accuracy_per_attack

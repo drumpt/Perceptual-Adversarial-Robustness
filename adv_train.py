@@ -64,12 +64,17 @@ if __name__ == '__main__':
     parser.add_argument('--maximize_attack', action='store_true',
                         default=False,
                         help='choose the attack with maximum loss')
+    parser.add_argument('--mix_max_avg', type=int, default=0,
+                        help='mix maximum loss and average loss')
+    parser.add_argument('--max_loss_ratio', type=float, default=0.5,
+                        help='maximum loss ratio when mixing maximum loss and average loss')
 
     parser.add_argument('--seed', type=int, default=0, help='RNG seed')
     parser.add_argument('--continue', default=False, action='store_true',
                         help='continue previous training')
     parser.add_argument('--keep_every', type=int, default=1,
                         help='only keep a checkpoint every X epochs')
+    parser.add_argument('--checkpoint_dir', default='', help='checkpoint from which to continue')
 
     parser.add_argument('--optim', type=str, default='sgd')
     parser.add_argument('--lr', type=float, metavar='LR', required=False,
@@ -84,6 +89,11 @@ if __name__ == '__main__':
                         help='attack(s) to harden against')
     parser.add_argument('--use_mat', type=int, default=0,
                         help='whether to use mixed adversarial training or not')
+    parser.add_argument('--mat_gamma', type=float, default=0.25,
+                        help='whether to use mixed adversarial training or not')
+    parser.add_argument('--mat_beta', type=float, default=1,
+                        help='whether to use mixed adversarial training or not')
+
 
     args = parser.parse_args()
 
@@ -133,20 +143,38 @@ if __name__ == '__main__':
         workers=4, batch_size=args.batch_size)
 
     attacks = [eval(attack_str) for attack_str in args.attack]
-    validation_attacks = [
-        NoAttack(),
-        LinfAttack(model, dataset_name=args.dataset,
-                   num_iterations=VAL_ITERS),
-        L2Attack(model, dataset_name=args.dataset,
-                 num_iterations=VAL_ITERS),
-        JPEGLinfAttack(model, dataset_name=args.dataset,
-                       num_iterations=VAL_ITERS),
-        FogAttack(model, dataset_name=args.dataset,
-                  num_iterations=VAL_ITERS),
-        StAdvAttack(model, num_iterations=VAL_ITERS),
-        ReColorAdvAttack(model, num_iterations=VAL_ITERS),
-        LagrangePerceptualAttack(model, num_iterations=30),
-    ]
+    if len(args.attack) == 1:
+        validation_attacks = [
+            NoAttack(),
+            LinfAttack(model, dataset_name=args.dataset,
+                    num_iterations=VAL_ITERS),
+            L2Attack(model, dataset_name=args.dataset,
+                    num_iterations=VAL_ITERS),
+            JPEGLinfAttack(model, dataset_name=args.dataset,
+                        num_iterations=VAL_ITERS),
+            FogAttack(model, dataset_name=args.dataset,
+                    num_iterations=VAL_ITERS),
+            StAdvAttack(model, num_iterations=VAL_ITERS),
+            ReColorAdvAttack(model, num_iterations=VAL_ITERS),
+            LagrangePerceptualAttack(model, num_iterations=30)
+        ]
+    else:
+        validation_attacks = [
+            NoAttack(),
+            LinfAttack(model, dataset_name=args.dataset,
+                    num_iterations=VAL_ITERS),
+            L2Attack(model, dataset_name=args.dataset,
+                    num_iterations=VAL_ITERS),
+            JPEGLinfAttack(model, dataset_name=args.dataset,
+                        num_iterations=VAL_ITERS),
+            FogAttack(model, dataset_name=args.dataset,
+                    num_iterations=VAL_ITERS),
+            StAdvAttack(model, num_iterations=VAL_ITERS),
+            ReColorAdvAttack(model, num_iterations=VAL_ITERS),
+            LagrangePerceptualAttack(model, num_iterations=30),
+            DeepFoolAttack(model, steps=VAL_ITERS, overshoot=0.02),
+            JitterAttack(model, eps=0.3, alpha=2/255, steps=40, scale=10, std=0.1, random_start=True)
+        ]
 
     flags = []
     if args.only_attack_correct:
@@ -155,6 +183,8 @@ if __name__ == '__main__':
         flags.append('random')
     if args.maximize_attack:
         flags.append('maximum')
+    if args.mix_max_avg:
+        flags.append(f"mix_max_avg_{args.mix_max_avg}_max_loss_ratio_{args.max_loss_ratio}")
     if args.lpips_model:
         lpips_model_name, _ = os.path.splitext(os.path.basename(
             args.lpips_model))
@@ -173,7 +203,11 @@ if __name__ == '__main__':
             .replace(", num_iterations=10", '')
         )
     experiment_path_parts.append(attacks_part)
-    experiment_path_parts.append(f"use_mat_{args.use_mat}")
+    if args.use_mat:
+        experiment_path_parts.append(f"use_mat_{args.use_mat}_mat_beta_{args.mat_beta}_mat_gamma_{args.mat_gamma}")
+    else:
+        experiment_path_parts.append(f"use_mat_{args.use_mat}")
+
     experiment_path = os.path.join(*experiment_path_parts)
 
     iteration = 0
@@ -237,6 +271,21 @@ if __name__ == '__main__':
             start_epoch = latest_checkpoint_epoch + 1
             adaptive_eps = state.get('adaptive_eps', {})
 
+    # custom loader
+    if args.checkpoint_dir:
+        state = torch.load(args.checkpoint_dir)
+        # if 'iteration' in state:
+        #     iteration = state['iteration']
+        if isinstance(model, FeatureModel):
+            model.model.load_state_dict(state['model'])
+            print("pre-trained model is loaded!")
+        else:
+            model.load_state_dict(state['model'])
+            print("pre-trained model is loaded!")
+        # if 'optimizer' in state:
+        #     optimizer.load_state_dict(state['optimizer'])
+        #     print('optimizer is loaded!')
+
     # parallelize
     if torch.cuda.is_available():
         # device_ids = list(range(args.parallel))
@@ -299,10 +348,18 @@ if __name__ == '__main__':
         logits = model(adv_inputs)
 
         # CONSTRUCT LOSS
-        loss = F.cross_entropy(logits, all_labels, reduction='none')
         if args.maximize_attack:
+            loss = F.cross_entropy(logits, all_labels, reduction='none')
             loss, _ = loss.resize(len(step_attacks), inputs.size()[0]).max(0)
-        loss = loss.mean()
+            loss = loss.mean()
+        elif args.mix_max_avg:
+            max_loss, _ = F.cross_entropy(logits, all_labels, reduction='none').resize(len(step_attacks), inputs.size()[0]).max(0)
+            max_loss = max_loss.mean()
+            avg_loss = F.cross_entropy(logits, all_labels, reduction='none').mean()
+            loss = args.max_loss_ratio * max_loss + (1 - args.max_loss_ratio) * avg_loss
+        else:
+            loss = F.cross_entropy(logits, all_labels, reduction='none')
+            loss = loss.mean()
 
         # LOGGING
         accuracy = calculate_accuracy(logits, all_labels)
@@ -343,8 +400,6 @@ if __name__ == '__main__':
         log_fn: Optional[Callable[[str, Any], Any]] = None,
     ):
         # hyperparameters and kl-divergence function
-        MAT_GAMMA = 0.5
-        MAT_BETA = 0.4
         kl_div_loss_fn = nn.KLDivLoss(reduction='batchmean', log_target=True)
 
         prefix = 'train' if train else 'val'
@@ -403,7 +458,7 @@ if __name__ == '__main__':
             )
         kl_div_loss = torch.mean(torch.stack(kl_div_loss_list))
 
-        loss = MAT_GAMMA * clean_cross_entropy + (1 - MAT_GAMMA) * adv_cross_entropy + MAT_BETA * kl_div_loss
+        loss = args.mat_gamma * clean_cross_entropy + (1 - args.mat_gamma) * adv_cross_entropy + args.mat_beta * kl_div_loss
 
         # LOGGING
         accuracy = calculate_accuracy(all_logits, all_labels)
@@ -448,6 +503,9 @@ if __name__ == '__main__':
             nn.utils.clip_grad_value_(model.parameters(), args.clip_grad)
             optimizer.step()
 
+    best_accuracy = 0
+    best_model = None
+
     for epoch in range(start_epoch, args.num_epochs):
         lr = args.lr
         for lr_drop_epoch in lr_drop_epochs:
@@ -476,12 +534,34 @@ if __name__ == '__main__':
         logger.info('BEGIN VALIDATION')
         model.eval()
 
-        evaluation.evaluate_against_attacks(
+        accuracy_per_attack = evaluation.evaluate_against_attacks(
             model, validation_attacks, val_loader, parallel=args.parallel,
             writer=writer, iteration=iteration, num_batches=args.val_batches,
         )
+        avg_accuracy = sum(accuracy_per_attack.values()) / len(accuracy_per_attack.values())
 
-        checkpoint_fname = os.path.join(log_dir, f'{epoch:04d}.ckpt.pth')
+        # save best model
+        if avg_accuracy > best_accuracy:
+            best_accuracy = avg_accuracy
+            best_model = model
+
+            checkpoint_fname = os.path.join(log_dir, f"best.ckpt.pth")
+            logger.info(f'CHECKPOINT {checkpoint_fname}')
+            checkpoint_model = best_model
+            if isinstance(checkpoint_model, nn.DataParallel):
+                checkpoint_model = checkpoint_model.module
+            if isinstance(checkpoint_model, FeatureModel):
+                checkpoint_model = checkpoint_model.model
+            state = {
+                'model': checkpoint_model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'iteration': iteration,
+                'arch': args.arch,
+            }
+            torch.save(state, checkpoint_fname)
+
+        # save last model
+        checkpoint_fname = os.path.join(log_dir, f"last.ckpt.pth")
         logger.info(f'CHECKPOINT {checkpoint_fname}')
         checkpoint_model = model
         if isinstance(checkpoint_model, nn.DataParallel):
@@ -496,12 +576,12 @@ if __name__ == '__main__':
         }
         torch.save(state, checkpoint_fname)
 
-        # delete extraneous checkpoints
-        last_keep_checkpoint = (epoch // args.keep_every) * args.keep_every
-        for epoch, checkpoint_fname in get_checkpoint_fnames():
-            if epoch < last_keep_checkpoint and epoch % args.keep_every != 0:
-                logger.info(f'  remove {checkpoint_fname}')
-                os.remove(checkpoint_fname)
+        # # delete extraneous checkpoints
+        # last_keep_checkpoint = (epoch // args.keep_every) * args.keep_every
+        # for epoch, checkpoint_fname in get_checkpoint_fnames():
+        #     if epoch < last_keep_checkpoint and epoch % args.keep_every != 0:
+        #         logger.info(f'  remove {checkpoint_fname}')
+        #         os.remove(checkpoint_fname)
 
     logger.info('BEGIN EVALUATION')
     model.eval()
