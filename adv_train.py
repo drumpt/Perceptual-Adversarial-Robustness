@@ -400,7 +400,7 @@ if __name__ == '__main__':
         log_fn: Optional[Callable[[str, Any], Any]] = None,
     ):
         # hyperparameters and kl-divergence function
-        kl_div_loss_fn = nn.KLDivLoss(reduction='batchmean', log_target=True)
+        kl_div_loss_fn = nn.KLDivLoss(reduction='none', log_target=True)
 
         prefix = 'train' if train else 'val'
         if log_fn is None:
@@ -431,7 +431,7 @@ if __name__ == '__main__':
             if to_attack.sum() > 0:
                 attack_adv_inputs[to_attack] = attack(inputs[to_attack],
                                                       labels[to_attack])
-            adv_inputs_list.append(attack_adv_inputs[to_attack])
+            adv_inputs_list.append(attack_adv_inputs)
         adv_inputs: torch.Tensor = torch.cat(adv_inputs_list)
 
         if train:
@@ -439,58 +439,50 @@ if __name__ == '__main__':
             model.train()  # now we set the model to train mode
 
         # concatenate batch first and forward
-        all_logits = model(torch.cat([inputs, adv_inputs]))
-        all_labels = torch.cat([labels] + [labels[to_attack]] * len(step_attacks)) # clean + num_attacks
-        all_loss = F.cross_entropy(all_logits, all_labels, reduction='none')
+        all_logits = model(torch.cat([inputs for _ in range(len(step_attacks))] + [adv_inputs])) # (B * 2 * len(step_attacks)) * C * W * H
+        clean_logits = all_logits[labels.shape[0] * len(step_attacks):,  ...] # (B * num_attacks) * num_classes
+        adv_logits = all_logits[:labels.shape[0] * len(step_attacks), ...] # (B * num_attacks) * num_classes
+        labels = torch.cat([labels for _ in range(len(step_attacks))]) # (B * num_attacks)
 
         # calculate cross-entropy for clean and adversarial samples, respectively.
-        clean_cross_entropy = all_loss[:labels.shape[0], ...].mean()
-        adv_cross_entropy = all_loss[labels.shape[0]:, ...].mean()
+        clean_loss = F.cross_entropy(clean_logits, labels, reduction='none')
+        adv_loss = F.cross_entropy(adv_logits, labels, reduction='none')
 
         # calculate KL-divergence for clean and adversarial samples.
-        kl_div_loss_list = []
-        for i in range(len(step_attacks)):
-            kl_div_loss_list.append(
-                kl_div_loss_fn(
-                    F.log_softmax(all_logits[0 : inputs.shape[0], ...][to_attack], dim=1),
-                    F.log_softmax(all_logits[inputs.shape[0] + i * len(labels[to_attack]) : inputs.shape[0] + (i + 1) * len(labels[to_attack]), ...], dim=1)
-                )
-            )
-        kl_div_loss = torch.mean(torch.stack(kl_div_loss_list))
+        kl_div_loss = kl_div_loss_fn( # (B * num_attacks)
+            F.log_softmax(clean_logits, dim=1),
+            F.log_softmax(adv_logits, dim=1)
+        ).sum(dim=1)
 
-        loss = args.mat_gamma * clean_cross_entropy + (1 - args.mat_gamma) * adv_cross_entropy + args.mat_beta * kl_div_loss
+        loss = args.mat_gamma * clean_loss + (1 - args.mat_gamma) * adv_loss + args.mat_beta * kl_div_loss
+        loss = loss.mean()
 
         # LOGGING
-        accuracy = calculate_accuracy(all_logits, all_labels)
+        accuracy = calculate_accuracy(adv_logits, labels)
         log_fn('loss', loss.item())
+        log_fn('clean_loss', clean_loss.mean().item())
+        log_fn('adv_loss', adv_loss.mean().item())
+        log_fn('kl_div_loss', kl_div_loss.mean().item())
         log_fn('accuracy', accuracy.item())
 
         with torch.no_grad():
-            for attack_index, attack in enumerate(["NoAttack"] + step_attacks):
-                if attack_index == 0:
-                    attack_name = attack
-                elif isinstance(attack, nn.DataParallel):
+            for attack_index, attack in enumerate(step_attacks):
+                if isinstance(attack, nn.DataParallel):
                     attack_name = attack.module.__class__.__name__
                 else:
                     attack_name = attack.__class__.__name__
-                if attack_index == 0:
-                    attack_logits = all_logits[
-                        attack_index * inputs.size()[0]:
-                        (attack_index + 1) * inputs.size()[0]
-                    ]
-                    log_fn(f'loss/{attack_name}',
-                        F.cross_entropy(attack_logits, labels).item())
-                    log_fn(f'accuracy/{attack_name}',
-                        calculate_accuracy(attack_logits, labels).item())
-                else:
-                    attack_logits = all_logits[
-                        inputs.size()[0] + (attack_index - 1) * len(labels[to_attack]):
-                        inputs.size()[0] + attack_index * len(labels[to_attack])
-                    ]
-                    log_fn(f'loss/{attack_name}',
-                        F.cross_entropy(attack_logits, labels[to_attack]).item())
-                    log_fn(f'accuracy/{attack_name}',
-                        calculate_accuracy(attack_logits, labels[to_attack]).item())                    
+                attack_logits = adv_logits[
+                    attack_index * inputs.shape[0]:
+                    (attack_index + 1) * inputs.shape[0]
+                ]
+                attack_labels = labels[
+                    attack_index * inputs.shape[0]:
+                    (attack_index + 1) * inputs.shape[0]                    
+                ]
+                log_fn(f'loss/{attack_name}',
+                    F.cross_entropy(attack_logits, attack_labels).item())
+                log_fn(f'accuracy/{attack_name}',
+                    calculate_accuracy(attack_logits, attack_labels).item())
 
         if train:
             logger.info(f'ITER {iteration:06d}\taccuracy: {accuracy.item() * 100:5.1f}%\tloss: {loss.item():.2f}')
@@ -513,6 +505,7 @@ if __name__ == '__main__':
                 lr *= 0.1
 
         logger.info(f'START EPOCH {epoch:04d} (lr={lr:.0e})')
+
         for batch_index, (inputs, labels) in enumerate(train_loader):
             # ramp-up learning rate for SGD
             if epoch < 5 and args.optim == 'sgd' and args.lr >= 0.1:
