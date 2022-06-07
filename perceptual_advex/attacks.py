@@ -7,8 +7,6 @@ from torch import optim
 from advex_uar.common.pyt_common import get_attack as get_uar_attack
 from advex_uar.attacks.attacks import InverseImagenetTransform
 
-import art
-from art.estimators.classification import PyTorchClassifier
 import torchattacks
 
 from .perceptual_attacks import *
@@ -419,6 +417,8 @@ class TorchAttack(nn.Module):
     def __init__(self):
         super().__init__()
 
+        self.attacker = None
+
     def forward(self, inputs, labels):
         return self.attacker(inputs, labels)
 
@@ -491,13 +491,6 @@ class SquareAttack(TorchAttack):
         super().__init__()
 
         self.attacker = torchattacks.Square(model, **kwargs)
-
-
-class EOTPGDAttack(TorchAttack):
-    def __init__(self, model, **kwargs):
-        super().__init__()
-
-        self.attacker = torchattacks.EOTPGD(model, **kwargs)
 
 
 class EOTPGDAttack(TorchAttack):
