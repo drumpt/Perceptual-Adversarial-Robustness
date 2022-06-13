@@ -140,7 +140,7 @@ if __name__ == '__main__':
             lpips_model.cuda()
 
     train_loader, val_loader = dataset.make_loaders(
-        workers=4, batch_size=args.batch_size)
+        workers=4, batch_size=args.batch_size, shuffle_val=False)
 
     attacks = [eval(attack_str) for attack_str in args.attack]
     if len(args.attack) == 1:
@@ -245,7 +245,8 @@ if __name__ == '__main__':
     def get_checkpoint_fnames():
         for checkpoint_fname in glob.glob(os.path.join(glob.escape(log_dir),
                                                        '*.ckpt.pth')):
-            epoch = int(os.path.basename(checkpoint_fname).split('.')[0])
+            # epoch = int(os.path.basename(checkpoint_fname).split('.')[0])
+            epoch = torch.load(checkpoint_fname)["iteration"] // len(train_loader)
             if epoch < args.num_epochs:
                 yield epoch, checkpoint_fname
 
@@ -273,9 +274,10 @@ if __name__ == '__main__':
 
     # custom loader
     if args.checkpoint_dir:
+        print(args.checkpoint_dir)
         state = torch.load(args.checkpoint_dir)
-        # if 'iteration' in state:
-        #     iteration = state['iteration']
+        if 'iteration' in state:
+            iteration = state['iteration']
         if isinstance(model, FeatureModel):
             model.model.load_state_dict(state['model'])
             print("pre-trained model is loaded!")
