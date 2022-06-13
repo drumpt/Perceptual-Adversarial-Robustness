@@ -1,4 +1,5 @@
 
+from sklearn.utils import shuffle
 import torch
 import csv
 import argparse

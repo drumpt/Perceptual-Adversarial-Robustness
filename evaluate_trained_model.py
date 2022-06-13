@@ -1,5 +1,6 @@
 
 from typing import Dict, List
+import math
 import torch
 import csv
 import argparse
@@ -31,16 +32,19 @@ if __name__ == '__main__':
 
     dataset, model = get_dataset_model(args)
     # train_loader, val_loader = dataset.make_loaders(1, args.batch_size, only_val=True)
-    train_loader, val_loader = dataset.make_loaders(1, args.batch_size)
+    train_loader, val_loader = dataset.make_loaders(1, args.batch_size, shuffle_val=False) # fix validation data order
+
+    # print(len(train_loader))
+    # print(len(val_loader))
 
     model.eval()
     if torch.cuda.is_available():
         model.cuda()
 
-    # for using adversarial-robustness-toolbox(art)
-    inputs, labels = next(iter(train_loader))
-    input_shape = inputs.shape[1:]
-    nb_classes = int(model(inputs.cuda()).shape[1])
+    # # for using adversarial-robustness-toolbox(art)
+    # inputs, labels = next(iter(train_loader))
+    # input_shape = inputs.shape[1:]
+    # nb_classes = int(model(inputs.cuda()).shape[1])
 
     attack_names: List[str] = args.attacks
     attacks = [eval(attack_name) for attack_name in attack_names]
@@ -56,12 +60,23 @@ if __name__ == '__main__':
     batches_correct: Dict[str, List[torch.Tensor]] = \
         {attack_name: [] for attack_name in attack_names}
 
+    # for reducing validation size
+    total_num_data = 1000
+    total_num_batches = math.ceil(total_num_data / len(val_loader))
+
     for batch_index, (inputs, labels) in enumerate(val_loader):
         if (
             args.num_batches is not None and
             batch_index >= args.num_batches
         ):
             break
+
+        if batch_index >= total_num_batches:
+            break
+
+        # # for debugging
+        # if batch_index == 0:
+        #     print(labels)
 
         if torch.cuda.is_available():
             inputs = inputs.cuda()
@@ -90,7 +105,8 @@ if __name__ == '__main__':
               sep='\t')
         accuracies.append(accuracy)
 
-    output_filename = args.output.split(".")[0] + "_" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S") + ".csv"
+    # output_filename = args.output.split(".")[0] + "_" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S") + ".csv"
+    output_filename = args.output
     with open(output_filename, 'w') as out_file:
         out_csv = csv.writer(out_file)
         out_csv.writerow(attack_names)
