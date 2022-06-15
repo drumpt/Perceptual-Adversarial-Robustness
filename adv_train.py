@@ -12,8 +12,11 @@ import numpy as np
 import torch
 from torch import nn
 from tensorboardX import SummaryWriter
+from torch.hub import load_state_dict_from_url
+from torch.utils.data import DataLoader
 
-from perceptual_advex import evaluation
+from perceptual_advex import evaluation, resnet
+from perceptual_advex import datasets
 from perceptual_advex.utilities import add_dataset_model_arguments, \
     get_dataset_model, calculate_accuracy
 from perceptual_advex.attacks import *
@@ -94,7 +97,6 @@ if __name__ == '__main__':
     parser.add_argument('--mat_beta', type=float, default=1,
                         help='whether to use mixed adversarial training or not')
 
-
     args = parser.parse_args()
 
     if args.optim == 'adam':
@@ -127,9 +129,15 @@ if __name__ == '__main__':
     np.random.seed(args.seed)
     random.seed(args.seed)
 
-    dataset, model = get_dataset_model(args)
+    if args.dataset != "cifar-100":
+        dataset, model = get_dataset_model(args)
+    else:
+        dataset = datasets.CIFAR100C(data_path="datasets")
+        model = resnet.resnet50()
+
     if isinstance(model, FeatureModel):
         model.allow_train()
+
     if torch.cuda.is_available():
         model.cuda()
 
@@ -139,11 +147,23 @@ if __name__ == '__main__':
         if torch.cuda.is_available():
             lpips_model.cuda()
 
-    train_loader, val_loader = dataset.make_loaders(
-        workers=4, batch_size=args.batch_size, shuffle_val=False)
+    if args.dataset != "cifar-100":
+        train_loader, val_loader = dataset.make_loaders(
+            workers=4, batch_size=args.batch_size, shuffle_val=False)
+    else:
+        train_loader = DataLoader(dataset.train_set, batch_size=args.batch_size, shuffle=True)
+        val_loader = DataLoader(dataset.valid_set, batch_size=args.batch_size, shuffle=False)
 
-    attacks = [eval(attack_str) for attack_str in args.attack]
-    if len(args.attack) == 1:
+    if args.attack == None:
+        attacks = []
+    else:
+        attacks = [eval(attack_str) for attack_str in args.attack]
+
+    if args.attack == None:
+        validation_attacks = [
+            NoAttack()
+        ]
+    elif len(args.attack) == 1:
         validation_attacks = [
             NoAttack(),
             LinfAttack(model, dataset_name=args.dataset,
@@ -156,7 +176,7 @@ if __name__ == '__main__':
                     num_iterations=VAL_ITERS),
             StAdvAttack(model, num_iterations=VAL_ITERS),
             ReColorAdvAttack(model, num_iterations=VAL_ITERS),
-            LagrangePerceptualAttack(model, num_iterations=30)
+            LagrangePerceptualAttack(model, num_iterations=30, lpips_model='alexnet')
         ]
     else:
         validation_attacks = [
@@ -171,7 +191,7 @@ if __name__ == '__main__':
                     num_iterations=VAL_ITERS),
             StAdvAttack(model, num_iterations=VAL_ITERS),
             ReColorAdvAttack(model, num_iterations=VAL_ITERS),
-            LagrangePerceptualAttack(model, num_iterations=30),
+            LagrangePerceptualAttack(model, num_iterations=30, lpips_model='alexnet'),
             DeepFoolAttack(model, steps=VAL_ITERS, overshoot=0.02),
             JitterAttack(model, eps=0.3, alpha=2/255, steps=40, scale=10, std=0.1, random_start=True)
         ]
@@ -193,7 +213,11 @@ if __name__ == '__main__':
     experiment_path_parts = [args.dataset, args.arch]
     if args.optim != 'sgd':
         experiment_path_parts.append(args.optim)
-    attacks_part = '-'.join(args.attack + flags)
+
+    if args.attack != None:
+        attacks_part = '-'.join(args.attack + flags)
+    else:
+        attacks_part = "clean"
     if len(attacks_part) > 255:
         attacks_part = (
             attacks_part
@@ -258,7 +282,7 @@ if __name__ == '__main__':
             latest_checkpoint_epoch = epoch
             latest_checkpoint_fname = checkpoint_fname
     if latest_checkpoint_fname is not None:
-        print(f'Load checkpoint {latest_checkpoint_fname}? (Y/n) ', end='')
+        logger.info(f'Load checkpoint {latest_checkpoint_fname}? (Y/n) ', end='')
         if vars(args)['continue'] or input().strip() != 'n':
             state = torch.load(latest_checkpoint_fname)
             if 'iteration' in state:
@@ -274,19 +298,16 @@ if __name__ == '__main__':
 
     # custom loader
     if args.checkpoint_dir:
-        print(args.checkpoint_dir)
+        logger.info(args.checkpoint_dir)
         state = torch.load(args.checkpoint_dir)
         if 'iteration' in state:
             iteration = state['iteration']
         if isinstance(model, FeatureModel):
             model.model.load_state_dict(state['model'])
-            print("pre-trained model is loaded!")
+            logger.info("pre-trained model is loaded!")
         else:
             model.load_state_dict(state['model'])
-            print("pre-trained model is loaded!")
-        # if 'optimizer' in state:
-        #     optimizer.load_state_dict(state['optimizer'])
-        #     print('optimizer is loaded!')
+            logger.info("pre-trained model is loaded!")
 
     # parallelize
     if torch.cuda.is_available():
@@ -402,7 +423,8 @@ if __name__ == '__main__':
         log_fn: Optional[Callable[[str, Any], Any]] = None,
     ):
         # hyperparameters and kl-divergence function
-        kl_div_loss_fn = nn.KLDivLoss(reduction='none', log_target=True)
+        # kl_div_loss_fn = nn.KLDivLoss(reduction='none', log_target=True)
+        kl_div_loss_fn = nn.KLDivLoss(reduction='none')
 
         prefix = 'train' if train else 'val'
         if log_fn is None:
@@ -453,7 +475,7 @@ if __name__ == '__main__':
         # calculate KL-divergence for clean and adversarial samples.
         kl_div_loss = kl_div_loss_fn( # (B * num_attacks)
             F.log_softmax(clean_logits, dim=1),
-            F.log_softmax(adv_logits, dim=1)
+            F.softmax(adv_logits, dim=1)
         ).sum(dim=1)
 
         loss = args.mat_gamma * clean_loss + (1 - args.mat_gamma) * adv_loss + args.mat_beta * kl_div_loss
@@ -570,13 +592,6 @@ if __name__ == '__main__':
             'arch': args.arch,
         }
         torch.save(state, checkpoint_fname)
-
-        # # delete extraneous checkpoints
-        # last_keep_checkpoint = (epoch // args.keep_every) * args.keep_every
-        # for epoch, checkpoint_fname in get_checkpoint_fnames():
-        #     if epoch < last_keep_checkpoint and epoch % args.keep_every != 0:
-        #         logger.info(f'  remove {checkpoint_fname}')
-        #         os.remove(checkpoint_fname)
 
     logger.info('BEGIN EVALUATION')
     model.eval()
