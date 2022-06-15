@@ -29,6 +29,7 @@ from recoloradv import color_spaces as cs
 PGD_ITERS = 20
 DATASET_NUM_CLASSES = {
     'cifar': 10,
+    'cifar-100': 100,
     'imagenet100': 100,
     'imagenet': 1000,
     'bird_or_bicycle': 2,
@@ -161,6 +162,8 @@ class UARAttack(nn.Module):
             dataset_name = 'imagenet'
         elif dataset_name == 'cifar':
             dataset_name = 'cifar-10'
+        elif dataset_name == 'cifar-100':
+            dataset_name = 'cifar-10'
 
         self.model = model
         self.uar_model = UARModel(model)
@@ -231,6 +234,7 @@ class LinfAttack(UARAttack):
         if bound is None:
             bound = {
                 'cifar': 8,
+                'cifar-100': 8,
                 'imagenet100': 8,
                 'imagenet': 8,
                 'bird_or_bicycle': 16,
@@ -250,6 +254,7 @@ class L2Attack(UARAttack):
         if bound is None:
             bound = {
                 'cifar': 255,
+                'cifar-100': 255,
                 'imagenet100': 3 * 255,
                 'imagenet': 3 * 255,
                 'bird_or_bicycle': 10 * 255,
@@ -269,6 +274,7 @@ class L1Attack(UARAttack):
         if bound is None:
             bound = {
                 'cifar': 0.5078125,
+                'cifar-100': 0.5078125,
                 'imagenet100': 1.016422,
                 'imagenet': 1.016422,
                 'bird_or_bicycle': 1.016422,
@@ -288,6 +294,7 @@ class JPEGLinfAttack(UARAttack):
         if bound is None:
             bound = {
                 'cifar': 0.25,
+                'cifar-100': 0.25,
                 'imagenet100': 0.5,
                 'imagenet': 0.5,
                 'bird_or_bicycle': 0.5,
@@ -382,6 +389,7 @@ class AutoLinfAttack(AutoAttack):
         if bound is None:
             bound = {
                 'cifar': 8/255,
+                'cifar-100': 8/255,
                 'imagenet100': 8/255,
                 'imagenet': 8/255,
                 'bird_or_bicycle': 16/255,
@@ -400,6 +408,7 @@ class AutoL2Attack(AutoAttack):
         if bound is None:
             bound = {
                 'cifar': 1,
+                'cifar-100': 1,
                 'imagenet100': 3,
                 'imagenet': 3,
                 'bird_or_bicycle': 10,

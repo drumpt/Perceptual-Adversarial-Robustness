@@ -3,13 +3,14 @@ import tempfile
 import os
 import numpy as np
 
-from torchvision.datasets import CIFAR10
+from torchvision.datasets import CIFAR10, CIFAR100
 
 from robustness.datasets import CIFAR, DATASETS, DataSet, CustomImageNet
 from robustness.data_augmentation import TRAIN_TRANSFORMS_IMAGENET, \
     TEST_TRANSFORMS_IMAGENET
 from robustness import data_augmentation
 from torchvision.datasets.vision import VisionDataset 
+import torchvision.transforms as transforms
 
 
 class ImageNet100(CustomImageNet):
@@ -236,6 +237,26 @@ class BirdOrBicycle(DataSet):
             'transform_test': TEST_TRANSFORMS_IMAGENET,
         }
         super().__init__(ds_name, data_path, **ds_kwargs)
+
+
+class CIFAR100C():
+    def __init__(self, data_path=None):
+        self.transform = transforms.Compose(
+        [transforms.ToTensor(),
+         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+
+        self.train_set = CIFAR100(
+            data_path,
+            train=True,
+            download=True,
+            transform=self.transform,
+        )
+        self.valid_set = CIFAR100(
+            data_path,
+            train=False,
+            download=True,
+            transform=self.transform,
+        )
 
 
 DATASETS['imagenet100'] = ImageNet100
