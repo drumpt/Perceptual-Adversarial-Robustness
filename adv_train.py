@@ -258,7 +258,7 @@ if __name__ == '__main__':
             latest_checkpoint_epoch = epoch
             latest_checkpoint_fname = checkpoint_fname
     if latest_checkpoint_fname is not None:
-        print(f'Load checkpoint {latest_checkpoint_fname}? (Y/n) ', end='')
+        logger.info(f'Load checkpoint {latest_checkpoint_fname}? (Y/n) ', end='')
         if vars(args)['continue'] or input().strip() != 'n':
             state = torch.load(latest_checkpoint_fname)
             if 'iteration' in state:
@@ -274,19 +274,17 @@ if __name__ == '__main__':
 
     # custom loader
     if args.checkpoint_dir:
-        print(args.checkpoint_dir)
+        logger.info(args.checkpoint_dir)
         state = torch.load(args.checkpoint_dir)
+
         if 'iteration' in state:
             iteration = state['iteration']
         if isinstance(model, FeatureModel):
             model.model.load_state_dict(state['model'])
-            print("pre-trained model is loaded!")
+            logger.info("pre-trained model is loaded!")
         else:
             model.load_state_dict(state['model'])
-            print("pre-trained model is loaded!")
-        # if 'optimizer' in state:
-        #     optimizer.load_state_dict(state['optimizer'])
-        #     print('optimizer is loaded!')
+            logger.info("pre-trained model is loaded!")
 
     # parallelize
     if torch.cuda.is_available():
