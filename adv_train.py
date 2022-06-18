@@ -15,8 +15,7 @@ from tensorboardX import SummaryWriter
 from torch.hub import load_state_dict_from_url
 from torch.utils.data import DataLoader
 
-from perceptual_advex import evaluation, resnet
-from perceptual_advex import datasets
+from perceptual_advex import evaluation, resnet, datasets
 from perceptual_advex.utilities import add_dataset_model_arguments, \
     get_dataset_model, calculate_accuracy
 from perceptual_advex.attacks import *
@@ -196,6 +195,11 @@ if __name__ == '__main__':
             JitterAttack(model, eps=0.3, alpha=2/255, steps=40, scale=10, std=0.1, random_start=True)
         ]
 
+    # to speed up training
+    validation_attacks = [
+        NoAttack()
+    ]
+
     flags = []
     if args.only_attack_correct:
         flags.append('only_attack_correct')
@@ -236,13 +240,13 @@ if __name__ == '__main__':
 
     iteration = 0
     log_dir = os.path.join(args.log_dir, experiment_path)
-    if os.path.exists(log_dir):
-        print(f'The log directory {log_dir} exists, delete? (y/N) ', end='')
-        if not vars(args)['continue'] and input().strip() == 'y':
-            shutil.rmtree(log_dir)
-            # sleep necessary to prevent weird bug where directory isn't
-            # actually deleted
-            time.sleep(5)
+    # if os.path.exists(log_dir):
+        # print(f'The log directory {log_dir} exists, delete? (y/N) ')
+        # if not vars(args)['continue'] and input().strip() == 'y':
+        #     shutil.rmtree(log_dir)
+        #     # sleep necessary to prevent weird bug where directory isn't
+        #     # actually deleted
+        #     time.sleep(5)
     writer = SummaryWriter(log_dir)
     logger = get_logger(log_dir)
 
@@ -282,7 +286,7 @@ if __name__ == '__main__':
             latest_checkpoint_epoch = epoch
             latest_checkpoint_fname = checkpoint_fname
     if latest_checkpoint_fname is not None:
-        logger.info(f'Load checkpoint {latest_checkpoint_fname}? (Y/n) ', end='')
+        logger.info(f'Load checkpoint {latest_checkpoint_fname}? (Y/n) ')
         if vars(args)['continue'] or input().strip() != 'n':
             state = torch.load(latest_checkpoint_fname)
             if 'iteration' in state:
