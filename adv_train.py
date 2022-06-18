@@ -11,6 +11,7 @@ from datetime import datetime
 import numpy as np
 import torch
 from torch import nn
+torch.autograd.set_detect_anomaly(True)
 from tensorboardX import SummaryWriter
 from torch.hub import load_state_dict_from_url
 from torch.utils.data import DataLoader
@@ -181,16 +182,16 @@ if __name__ == '__main__':
     else:
         validation_attacks = [
             NoAttack(),
-            LinfAttack(model, dataset_name=args.dataset,
-                    num_iterations=VAL_ITERS),
-            L2Attack(model, dataset_name=args.dataset,
-                    num_iterations=VAL_ITERS),
-            JPEGLinfAttack(model, dataset_name=args.dataset,
-                        num_iterations=VAL_ITERS),
-            FogAttack(model, dataset_name=args.dataset,
-                    num_iterations=VAL_ITERS),
-            StAdvAttack(model, num_iterations=VAL_ITERS),
-            ReColorAdvAttack(model, num_iterations=VAL_ITERS),
+            # LinfAttack(model, dataset_name=args.dataset,
+            #         num_iterations=VAL_ITERS),
+            # L2Attack(model, dataset_name=args.dataset,
+            #         num_iterations=VAL_ITERS),
+            # JPEGLinfAttack(model, dataset_name=args.dataset,
+            #             num_iterations=VAL_ITERS),
+            # FogAttack(model, dataset_name=args.dataset,
+            #         num_iterations=VAL_ITERS),
+            # StAdvAttack(model, num_iterations=VAL_ITERS),
+            # ReColorAdvAttack(model, num_iterations=VAL_ITERS),
             LagrangePerceptualAttack(model, num_iterations=30, lpips_model='alexnet'),
             DeepFoolAttack(model, steps=VAL_ITERS, overshoot=0.02),
             JitterAttack(model, eps=0.3, alpha=2/255, steps=40, scale=10, std=0.1, random_start=True)
@@ -282,7 +283,7 @@ if __name__ == '__main__':
             latest_checkpoint_epoch = epoch
             latest_checkpoint_fname = checkpoint_fname
     if latest_checkpoint_fname is not None:
-        logger.info(f'Load checkpoint {latest_checkpoint_fname}? (Y/n) ', end='')
+        logger.info(f'Load checkpoint {latest_checkpoint_fname}? (Y/n) ')
         if vars(args)['continue'] or input().strip() != 'n':
             state = torch.load(latest_checkpoint_fname)
             if 'iteration' in state:
@@ -370,6 +371,7 @@ if __name__ == '__main__':
             model.train()  # now we set the model to train mode
 
         logits = model(adv_inputs)
+        # logger.info(logits)
 
         # CONSTRUCT LOSS
         if args.maximize_attack:
@@ -384,6 +386,9 @@ if __name__ == '__main__':
         else:
             loss = F.cross_entropy(logits, all_labels, reduction='none')
             loss = loss.mean()
+
+        if not torch.isfinite(loss):
+            logger.info(loss)
 
         # LOGGING
         accuracy = calculate_accuracy(logits, all_labels)
@@ -481,6 +486,9 @@ if __name__ == '__main__':
 
         loss = args.mat_gamma * clean_loss + (1 - args.mat_gamma) * adv_loss + args.mat_beta * kl_div_loss
         loss = loss.mean()
+
+        if not torch.isfinite(loss):
+            logger.info(loss)
 
         # LOGGING
         accuracy = calculate_accuracy(adv_logits, labels)

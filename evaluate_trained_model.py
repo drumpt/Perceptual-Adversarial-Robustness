@@ -16,6 +16,7 @@ if __name__ == '__main__':
         description='Adversarial training evaluation')
 
     add_dataset_model_arguments(parser, include_checkpoint=True)
+    parser.add_argument('--checkpoint_dir', default='', help='checkpoint from which to continue')
     parser.add_argument('attacks', metavar='attack', type=str, nargs='+',
                         help='attack names')
     parser.add_argument('--batch_size', type=int, default=100,
@@ -36,6 +37,16 @@ if __name__ == '__main__':
 
     # print(len(train_loader))
     # print(len(val_loader))
+
+    if args.checkpoint_dir:
+        state = torch.load(args.checkpoint_dir)
+
+        if 'iteration' in state:
+            iteration = state['iteration']
+        if isinstance(model, FeatureModel):
+            model.model.load_state_dict(state['model'])
+        else:
+            model.load_state_dict(state['model'])
 
     model.eval()
     if torch.cuda.is_available():
