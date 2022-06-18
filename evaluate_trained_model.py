@@ -6,6 +6,9 @@ import csv
 import argparse
 from datetime import datetime
 
+from torch.utils.data import DataLoader
+
+from perceptual_advex import evaluation, resnet, datasets
 from perceptual_advex.utilities import add_dataset_model_arguments, \
     get_dataset_model
 from perceptual_advex.attacks import *
@@ -31,12 +34,24 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    dataset, model = get_dataset_model(args)
-    # train_loader, val_loader = dataset.make_loaders(1, args.batch_size, only_val=True)
-    train_loader, val_loader = dataset.make_loaders(1, args.batch_size, shuffle_val=False) # fix validation data order
+    if args.dataset != "cifar-100":
+        dataset, model = get_dataset_model(args)
+        train_loader, val_loader = dataset.make_loaders(1, args.batch_size, shuffle_val=False) # fix validation data order
+    else:
+        dataset = datasets.CIFAR100C(data_path="datasets")
+        model = resnet.resnet50()
+        train_loader = DataLoader(dataset.train_set, batch_size=args.batch_size, shuffle=True)
+        val_loader = DataLoader(dataset.valid_set, batch_size=args.batch_size, shuffle=False)
 
-    # print(len(train_loader))
-    # print(len(val_loader))
+    if args.checkpoint_dir:
+        state = torch.load(args.checkpoint_dir)
+
+        if 'iteration' in state:
+            iteration = state['iteration']
+        if isinstance(model, FeatureModel):
+            model.model.load_state_dict(state['model'])
+        else:
+            model.load_state_dict(state['model'])
 
     if args.checkpoint_dir:
         state = torch.load(args.checkpoint_dir)
@@ -51,11 +66,6 @@ if __name__ == '__main__':
     model.eval()
     if torch.cuda.is_available():
         model.cuda()
-
-    # # for using adversarial-robustness-toolbox(art)
-    # inputs, labels = next(iter(train_loader))
-    # input_shape = inputs.shape[1:]
-    # nb_classes = int(model(inputs.cuda()).shape[1])
 
     attack_names: List[str] = args.attacks
     attacks = [eval(attack_name) for attack_name in attack_names]
@@ -76,6 +86,7 @@ if __name__ == '__main__':
     total_num_batches = math.ceil(total_num_data / len(val_loader))
 
     for batch_index, (inputs, labels) in enumerate(val_loader):
+    
         if (
             args.num_batches is not None and
             batch_index >= args.num_batches
@@ -84,10 +95,6 @@ if __name__ == '__main__':
 
         if batch_index >= total_num_batches:
             break
-
-        # # for debugging
-        # if batch_index == 0:
-        #     print(labels)
 
         if torch.cuda.is_available():
             inputs = inputs.cuda()

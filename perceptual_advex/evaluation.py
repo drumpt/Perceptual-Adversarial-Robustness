@@ -97,15 +97,18 @@ def evaluate_against_attacks(model, attacks, val_loader, parallel=1,
 
         accuracy_per_attack[attack_name] = accuracy
 
-        for lpips_name, successful_lpips in [
-            ('alexnet', successful_alexnet_lpips),
-            ('model', successful_model_lpips),
-        ]:
-            if len(successful_lpips) > 0 and writer is not None:
-                writer.add_histogram(f'val/{attack_name}/lpips/{lpips_name}',
-                                     torch.stack(successful_lpips)
-                                     .cpu().detach().numpy(),
-                                     iteration)
+        # for lpips_name, successful_lpips in [
+        #     ('alexnet', successful_alexnet_lpips),
+        #     ('model', successful_model_lpips),
+        # ]:
+        #     try:
+        #         if len(successful_lpips) > 0 and writer is not None:
+        #             writer.add_histogram(f'val/{attack_name}/lpips/{lpips_name}',
+        #                                 torch.stack(successful_lpips)
+        #                                 .cpu().detach().numpy(),
+        #                                 iteration)
+        #     except:
+        #         pass
 
         if len(successful_attacks) > 0 and writer is not None:
             writer.add_image(f'val/{attack_name}/images',
